@@ -1,4 +1,4 @@
-function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal,ef,tau,calciumNoiseVar, lam, proposalVar, add_move, Dt, A)
+function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal,ef,tau,calciumNoiseVar, lam, proposalVar, add_move, Dt, A, con_lam)
     
     %addMoves, dropMoves, and timeMoves give acceptance probabilities for each subclass of move
     %the samples will be a cell array of lists of spike times - the spike times won't be sorted but this shouldn't be a problem.
@@ -10,6 +10,7 @@ function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     %% initialize some parameters
     T = length(calciumSignal); %for all of this, units are bins and spiketrains go from 0 to T where T is number of bins
+    ff = ~isnan(calciumSignal); % entries with data
     
 %   nsweeps = 1e3; %number of sweeps.
     nsweeps = 1;
@@ -22,7 +23,7 @@ function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal
     N = length(si); %number of spikes in spiketrain
         
     %initial logC - compute likelihood initially completely - updates to likelihood will be local
-    logC = -(ci-calciumSignal)*(ci-calciumSignal)'; 
+    logC = -norm(ci(ff)-calciumSignal(ff))^2; 
     
     %m = p_spike*Dt*T;
     
@@ -34,17 +35,13 @@ function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal
     % 4) Gibbs for time shifts with likelihood proposal add/drop
     
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    
-    
-    
+            
     
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     %% loop over sweeps to generate samples
     addMoves = [0 0]; %first elem is number successful, second is number total
     dropMoves = [0 0];
     timeMoves = [0 0];
-    time_move = 0;
-    time_add = 0;
     for i = 1:nsweeps
     
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -59,14 +56,16 @@ function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal
                 tmpi_ = -(tmpi_);
             elseif tmpi_>T
                 tmpi_ = T-(tmpi_-T);
-            end
-            
+            end           
+
             %set si_ to set of spikes with the move and ci_ to adjusted calcium and update logC_ to adjusted
-            [si_, ci_, logC_] = removeSpike(si,ci,logC,ef,tau,calciumSignal,tmpi,ni,Dt,A);
-            [si_, ci_, logC_] = addSpike(si_,ci_,logC_,ef,tau,calciumSignal,tmpi_,Dt,A);
+%           [si_, ci_, logC_] = removeSpike(si,ci,logC,ef,tau,calciumSignal,tmpi,ni,Dt,A);
+%           [si_, ci_, logC_] = addSpike(si_,ci_,logC_,ef,tau,calciumSignal,tmpi_,ni,Dt,A);     
+            [si_, ci_, logC_] = replaceSpike(si,ci,logC,ef,tau,calciumSignal,tmpi,ni,tmpi_,Dt,A);
             
             %accept or reject
-            ratio = exp((1/(2*calciumNoiseVar))*(logC_-logC)*lam(tmpi)/lam(tmpi_));
+            ratio = exp((logC_-logC)/(2*calciumNoiseVar));
+            if ~con_lam; ratio = ratio*lam(tmpi)/lam(tmpi_); end
             if ratio>1 %accept
                 si = si_;
                 ci = ci_;
@@ -111,7 +110,7 @@ function [samples, ci]  = get_next_spikes(curr_spikes,curr_calcium,calciumSignal
             %% add
             %propose a uniform add
             tmpi = T*Dt*rand;         
-            [si_, ci_, logC_] = addSpike(si,ci,logC,ef,tau,calciumSignal,tmpi,Dt,A);
+            [si_, ci_, logC_] = addSpike(si,ci,logC,ef,tau,calciumSignal,tmpi,length(si_)+1,Dt,A);
         
             %forward probability
             fprob = 1/(T*Dt);

@@ -17,8 +17,8 @@ c_true = c(round(1/dt):round(1/dt):round(T/dt));
 sg = hmax/4;        % noise level
 y = c_true + sg*randn(1,length(c_true));
 
-figure;plot(dt:dt:T,c); hold all; scatter(1:T,y,'r*'); drawnow; %stem(1:T,y); drawnow;
-        legend('True Calcium','Observed Values');
+figure;subplot(2,1,1); plot(dt:dt:T,c); hold all; scatter(1:T,y,'r*'); 
+                       legend('True Calcium','Observed Values');
 %%  constrained foopsi
 [g2,h2] = tau_c2d(tau_rise,tau_decay,1);
 P.f = 1;
@@ -37,16 +37,22 @@ for cnt = 1:length(f)
     count = count + spikeRaster(f(cnt));
 end
 
-figure;
-
+subplot(2,1,2);
 stem(spikes_foopsi); hold all; 
     scatter(spikes(:,1),spikes(:,2)-0.95+max(spikes_foopsi),15,'magenta','filled');
     axis([1,T,0,max(spikes(:,2))-0.95+max(spikes_foopsi)]);
     title('Foopsi Spikes','FontWeight','bold','Fontsize',14); xlabel('Timestep','FontWeight','bold','Fontsize',16);
     legend('Foopsi Spikes','Ground Truth');
     drawnow;
-%% MCMC   
+%% MCMC 
+
 params.p = 2;
 params.g = g2;
-SAMPLES2 = cont_ca_sampler(y,params);    %% MCMC        
+params.sp = spikes_foopsi;   % pass results of foopsi for initialization (if not, they are computed)
+params.c = ca_foopsi;
+params.b = cb;
+params.c1 = c1;
+params.sn = sg;
+params.marg = 0;
+SAMPLES2 = cont_ca_sampler(y,params);    %% MCMC   
 plot_continuous_samples(SAMPLES2,y(:));
