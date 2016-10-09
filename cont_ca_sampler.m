@@ -1,10 +1,9 @@
 function SAMPLES = cont_ca_sampler(Y,params)
 
-% add the capability of dealing with missing numbers
+% MCMC continuous time sampler of spiketimes given a fluorescence trace Y
 
-% Continuous time sampler
+% Inputs:
 % Y                     data
-% P                     intialization parameters (discrete time constant P.g required)
 % params                parameters structure
 % params.g              discrete time constant(s) (estimated if not provided)
 % params.sn             initializer for noise (estimated if not provided)
@@ -12,7 +11,7 @@ function SAMPLES = cont_ca_sampler(Y,params)
 % params.c1             initializer for initial concentration (estimated if not provided)
 % params.Nsamples       number of samples after burn in (default 500)
 % params.B              number of burn in samples (default 200)
-% params.marg           flag for marginalized sampler (default 0)
+% params.marg           flag for marginalized sampler for baseline and initial concentration (default 0)
 % params.upd_gam        flag for updating gamma (default 1)
 % params.gam_step       number of samples after which gamma is updated (default 50)
 % params.std_move       standard deviation of shifting kernel (default 3*Dt)
@@ -45,6 +44,9 @@ function SAMPLES = cont_ca_sampler(Y,params)
 
 % Author: Eftychios A. Pnevmatikakis and Josh Merel
 
+% Reference: Pnevmatikakis et al., Bayesian spike inference from calcium
+%                imaging data, Asilomar 2013.
+
 Y = Y(:);
 T = length(Y);
 isanY = ~isnan(Y);                          % Deal with possible missing entries
@@ -58,6 +60,7 @@ defparams.b = [];                           % initializer for baseline concentra
 defparams.c1 = [];                          % initializer for initial concentration
 defparams.c = [];                           % initializer for calcium concentration
 defparams.sp = [];                          % initializer for spiking signal
+defparams.bas_nonneg = 0;                   % allow negative baseline during initialization
 defparams.Nsamples = 400;                   % number of samples after burn in period
 defparams.B = 200;                          % length of burn in period
 defparams.marg = 0;                         % flag to marginalize out baseline and initial concentration
@@ -73,7 +76,7 @@ defparams.init = [];                        % sampler initializer
 defparams.f = 1;                            % imaging rate (irrelevant)
 defparams.p = 1;                            % order of AR process (use p = 1 or p = 2)
 defparams.defg = [0.6,0.95];                % default time constant roots
-defparams.TauStd = [.1,1];                  % Standard deviation for time constant proposal
+defparams.TauStd = [.2,2];                  % Standard deviation for time constant proposal
 defparams.prec = 1e-2;                      % Precision parameter when adding new spikes
 defparams.con_lam = true;                   % Flag for constant firing across time
 defparams.print_flag = 0;
@@ -87,6 +90,7 @@ else
     if ~isfield(params,'c1'); params.c1 = defparams.c1; end
     if ~isfield(params,'c'); params.c = defparams.c; end
     if ~isfield(params,'sp'); params.sp = defparams.sp; end
+    if ~isfield(params,'bas_nonneg'); params.bas_nonneg = defparams.bas_nonneg; end
     if ~isfield(params,'Nsamples'); params.Nsamples = defparams.Nsamples; end
     if ~isfield(params,'B'); params.B = defparams.B; end
     if ~isfield(params,'marg'); params.marg = defparams.marg; end
@@ -115,26 +119,27 @@ gam_step = params.gam_step;
 std_move = params.std_move;
 add_move = params.add_move;
 
+if isempty(params.init)
+   params.init = get_initial_sample(Y,params);   
+end 
+SAM = params.init;
+
 if isempty(params.g)
     p = params.p;
 else
     p = length(params.g);                       % order of autoregressive process
 end
 
-if isempty(params.init)
-   params.init = get_initial_sample(Y,params);   
-end 
-SAM = params.init;
-
 g = SAM.g(:)';   % check initial time constants, if not reasonable set to default values 
-if g == 0
+
+if g == 0 
     gr = params.defg;
     pl = poly(gr);
     g = -pl(2:end);
     p = 2;
 end
 gr = sort(roots([1,-g(:)']));
-if p == 1; gr = [0,gr]; end
+if p == 1; gr = [0,max(gr)]; end
 if any(gr<0) || any(~isreal(gr)) || length(gr)>2 || max(gr)>0.998
     gr = params.defg;
 end
@@ -156,8 +161,8 @@ sg = SAM.sg;
 spiketimes_ = SAM.spiketimes_;
 lam_ = SAM.lam_;
 A_ = SAM.A_*diff(gr);
-b_ = SAM.b_;
-C_in = SAM.C_in;
+b_ = max(SAM.b_,prctile(Y,8));
+C_in = max(min(SAM.C_in,Y(1)-b_),0);
     
 s_1 = zeros(T,1);
 s_2 = zeros(T,1);
@@ -209,7 +214,6 @@ end
 Sp = .1*range(Y)*eye(3);                          % prior covariance for [A,Cb,Cin]
 Ld = inv(Sp);
 lb = [params.A_lb/h_max*diff(gr),params.b_lb,params.c1_lb]';      % lower bound for [A,Cb,Cin]
-
 A_ = max(A_,1.1*lb(1));
 
 mu = [A_;b_;C_in];                % prior mean 
@@ -264,14 +268,14 @@ for i = 1:N
     mu_post = (Ld + EAM'*EAM/sg^2)\(EAM'*Y(isanY)/sg^2 + Sp\mu);
     if ~marg_flag
         x_in = [A_;b_;C_in];
-        if any(x_in < lb)
-            x_in = max(x_in,1.1*lb);
+        if any(x_in <= lb)
+            x_in = max(x_in,(1+0.1*sign(lb)).*lb) + 1e-5;
         end
         if all(isnan(L(:))) % FN added to avoid error in R = chol(L) in HMC_exact2 due to L not being positive definite. It happens when isnan(det(Ld + AM'*AM/sg^2)), ie when Ld + AM'*AM/sg^2 is singular (not invertible).
             Am(i) = NaN;
             Cb(i) = NaN;
             Cin(i) = NaN';
-        else        
+        else
             [temp,~] = HMC_exact2(eye(3), -lb, L, mu_post, 1, Ns, x_in);
             Am(i) = temp(1,Ns);
             Cb(i) = temp(2,Ns);
@@ -287,14 +291,19 @@ for i = 1:N
         SG(i) = sg;
     else
         repeat = 1;
+        cnt = 0;
         while repeat
             A_ = mu_post(1) + sqrt(L(1,1))*randn;
             repeat = (A_<0);
+            cnt = cnt + 1;
+            if cnt > 1e3
+                error('The marginalized sampler cannot find a valid amplitude value. Set params.marg = 0 and try again.')
+            end
         end                
         Am(i) = A_;
         if i > B
-           mub = mub + mu_post(1+(1:p));
-           Sigb = Sigb + L(1+(1:p),1+(1:p));
+           mub = mub + mu_post(2:3); %mu_post(1+(1:p));
+           Sigb = Sigb + L(2:3,2:3); %L(1+(1:p),1+(1:p));
         end
     end
     if gam_flag
